@@ -1,0 +1,271 @@
+% quadrotor_linear_PID_no_toolbox.m
+% Linearized quadrotor simulation with PID (position integrators included)
+% No Control System Toolbox required.
+% The linearized dynamics use small-angle approximations.
+%
+% State vector used in ODE:  [x; y; z; phi; theta; psi; dx; dy; dz; p; q; r; int_ex; int_ey; int_ez]
+%   - First 12 are physical states (same ordering used earlier)
+%   - Last 3 are integrals of position errors (for Ki on x,y,z)
+%
+% Author: ChatGPT (adapted to user's request)
+function quadrotor_linear_PID_no_toolbox()
+    clc; clear; close all;
+    fprintf('Running linearized quadrotor simulation with PID (no toolbox)...\n');
+
+    %% -------------------------
+    % Parameters
+    %% -------------------------
+    params.g   = 9.81;
+    params.m   = 0.5;
+    params.l   = 0.25;
+    params.Ixx = 2e-3;
+    params.Iyy = 2e-3;
+    params.Izz = 4e-3;
+
+    % Simulation time
+    t0 = 0; tf = 12;
+    tspan = [t0 tf];
+
+    % Desired absolute hover state
+    desired.pos = [0; 0; 5];        % target at z = 5 m
+    desired.vel = [0; 0; 0];
+    desired.acc = [0; 0; 0];
+    desired.rpy = [0; 0; 0];
+    desired.omega = [0; 0; 0];
+
+    % Initial absolute state (start on ground with small attitude offsets)
+    x0_abs = zeros(12,1);
+    x0_abs(3) = 0;    % start at ground (z=0)
+    x0_abs(4) = 0.2;  % small roll
+    x0_abs(5) = -0.1; % small pitch
+
+    % Integrator initial states (zero)
+    int0 = [0;0;0];
+
+    % Compose initial augmented state (15x1)
+    x0 = [x0_abs; int0];
+
+    %% -------------------------
+    % Controller gains (tune these)
+    %% -------------------------
+    % Position PID gains (outer loop)
+    Kp_pos = [10; 10; 20];   % proportional for x,y,z
+    Ki_pos = [0.0; 0.0; 0.5]; % integral for x,y,z (set small for z if needed)
+    Kd_pos = [8; 8; 12];     % derivative for x,y,z
+
+    % Attitude PD gains (inner loop)
+    Kp_att = [150; 150; 70]; % phi, theta, psi
+    Ki_att = [0; 0; 0];      % usually zero for fast attitude inner loop
+    Kd_att = [20; 20; 15];   % damping for p,q,r
+
+    % Actuator limits (simple saturation)
+    F_max = 30;   % N (total thrust)
+    F_min = 0;    % cannot be negative
+    M_limits = [0.2; 0.2; 0.2]; % Nm limits for roll,pitch,yaw torques magnitude
+
+    %% -------------------------
+    % Run simulation using ode45
+    %% -------------------------
+    opts = odeset('RelTol',1e-6,'AbsTol',1e-8);
+    [T, X_aug] = ode45(@(t, x) linear_augmented_dynamics(t, x, desired, params, Kp_pos, Ki_pos, Kd_pos, Kp_att, Ki_att, Kd_att, F_min, F_max, M_limits), tspan, x0, opts);
+
+    % Extract absolute states (first 12 columns)
+    X = X_aug(:, 1:12);
+
+    %% -------------------------
+    % Plot results
+    %% -------------------------
+    fprintf('Plotting results...\n');
+    plot_linear_results_and_animate(T, X, desired, params);
+
+    fprintf('Done.\n');
+end
+
+%% -------------------------
+% Linearized augmented dynamics (with integrator states)
+% x_aug: 15x1 vector [12 physical; 3 integrators]
+% returns xdot_aug (15x1)
+%% -------------------------
+function xdot_aug = linear_augmented_dynamics(~, x_aug, desired, params, Kp_pos, Ki_pos, Kd_pos, Kp_att, Ki_att, Kd_att, F_min, F_max, M_limits)
+    % Unpack
+    x = x_aug(1:12);      % physical states
+    int_e = x_aug(13:15); % integrated position errors
+
+    pos = x(1:3);
+    rpy = x(4:6);
+    vel = x(7:9);
+    omega = x(10:12);
+
+    % ----- Outer-loop PID for position (compute desired_acc)
+    pos_err = desired.pos - pos;
+    vel_err = desired.vel - vel;
+
+    % derivative term is based on velocity error
+    desired_acc = desired.acc + Kp_pos .* pos_err + Ki_pos .* int_e + Kd_pos .* vel_err;
+
+    % Thrust command required (absolute thrust)
+    F = params.m * (params.g + desired_acc(3));
+
+    % saturate thrust
+    F = min(max(F, F_min), F_max);
+
+    % Compute desired small-angle attitudes from desired_acc (psi_des assumed zero)
+    desired_rpy = zeros(3,1);
+    % small-angle mapping (same as earlier)
+    desired_rpy(1) = (1/params.g) * (desired_acc(1)*sin(desired.rpy(3)) - desired_acc(2)*cos(desired.rpy(3)));
+    desired_rpy(2) = (1/params.g) * (desired_acc(1)*cos(desired.rpy(3)) + desired_acc(2)*sin(desired.rpy(3)));
+    desired_rpy(3) = desired.rpy(3);
+
+    % ----- Inner-loop attitude PID/PD to compute torques M
+    rpy_err = desired_rpy - rpy;
+    omega_err = desired.omega - omega;
+
+    % Attitude integral (rarely used) - kept for completeness
+    % (we don't store separate integral for attitude in augmented state; Ki_att usually zero)
+    M = Kp_att .* rpy_err + Kd_att .* omega_err; % + Ki_att .* (att_int if implemented)
+
+    % saturate torques element-wise
+    M = min(max(M, -M_limits), M_limits);
+
+    % ----- Linearized dynamics (small-angle approx)
+    % State order: [x;y;z;phi;theta;psi; dx;dy;dz; p;q;r]
+    % A matrix effects:
+    % x_dot = dx  -> captured by vel
+    % phi_dot = p, ... small-angle kinematics approximate
+    % Translational acceleration coupling:
+    % x_ddot = g * theta
+    % y_ddot = -g * phi
+    % z_ddot = (1/m) * (F - m*g)  but we already computed F as absolute; linearized model uses u_dev = F - m*g
+    % rotational accelerations: p_dot = Mx / Ixx, etc.
+
+    % Build derivatives
+    pos_dot = vel; % dx, dy, dz
+
+    % rpy_dot approximated as angular rates (small-angle)
+    rpy_dot = omega; % [p;q;r]
+
+    acc_x = params.g * rpy(2);   % g * theta
+    acc_y = -params.g * rpy(1);  % -g * phi
+    acc_z = (F/params.m) - params.g; % vertical accel
+
+    vel_dot = [acc_x; acc_y; acc_z];
+
+    omega_dot = zeros(3,1);
+    omega_dot(1) = M(1) / params.Ixx; % p_dot
+    omega_dot(2) = M(2) / params.Iyy; % q_dot
+    omega_dot(3) = M(3) / params.Izz; % r_dot
+
+    % Integrator derivatives: int_dot = pos_error (we integrate error)
+    int_dot = pos_err;
+
+    % Pack state derivative
+    xdot_aug = [pos_dot; rpy_dot; vel_dot; omega_dot; int_dot];
+end
+
+%% -------------------------
+% Plotting + animation for linear model results
+%% -------------------------
+function plot_linear_results_and_animate(T, X, desired, params)
+    x = X(:,1); y = X(:,2); z = X(:,3);
+    phi = X(:,4); theta = X(:,5); psi = X(:,6);
+    vx = X(:,7); vy = X(:,8); vz = X(:,9);
+
+    figure('Name','Linearized PID Quadrotor Results','units','normalized','outerposition',[0 0 1 1],'Color',[0.12 0.12 0.12]);
+
+    % 3D Trajectory
+    subplot(2,2,1);
+    plot3(x,y,z,'r-','LineWidth',2); hold on;
+    plot3(x(1), y(1), z(1),'go','MarkerFaceColor','g','MarkerSize',8);
+    plot3(desired.pos(1), desired.pos(2), desired.pos(3),'kx','MarkerSize',12,'LineWidth',2);
+    grid on; title('3D Trajectory','Color','w');
+    xlabel('X (m)'); ylabel('Y (m)'); zlabel('Z (m)');
+    axis equal; view(35,25); set(gca,'Color',[0.15 0.15 0.15],'XColor','w','YColor','w','ZColor','w','GridColor',[0.3 0.3 0.3]);
+
+    % Altitude
+    subplot(2,2,2);
+    plot(T, z, 'b-', 'LineWidth', 2); hold on;
+    yline(desired.pos(3),'k--','Target z=5','Color','w');
+    grid on; title('Altitude vs Time','Color','w');
+    xlabel('Time (s)'); ylabel('Z (m)');
+    set(gca,'Color',[0.15 0.15 0.15],'XColor','w','YColor','w','GridColor',[0.3 0.3 0.3]);
+
+    % Attitude
+    subplot(2,2,3);
+    plot(T, rad2deg(phi), 'r-', 'LineWidth', 1.8); hold on;
+    plot(T, rad2deg(theta), 'g--', 'LineWidth', 1.8);
+    grid on; title('Attitude (Roll & Pitch)','Color','w');
+    xlabel('Time (s)'); ylabel('Angle (deg)');
+    legend('\phi (roll)','\theta (pitch)','TextColor','w');
+    set(gca,'Color',[0.15 0.15 0.15],'XColor','w','YColor','w','GridColor',[0.3 0.3 0.3]);
+
+    % Vertical velocity
+    subplot(2,2,4);
+    plot(T, vz, 'm-', 'LineWidth', 1.8);
+    grid on; title('Vertical Velocity','Color','w');
+    xlabel('Time (s)'); ylabel('dz/dt (m/s)');
+    set(gca,'Color',[0.15 0.15 0.15],'XColor','w','YColor','w','GridColor',[0.3 0.3 0.3]);
+
+    sgtitle('Linearized Quadrotor with PID Position Controller','Color','w');
+
+    % Animation
+    animate_linear_quad(T, X, desired, params);
+end
+
+%% -------------------------
+% Simple 3D animation for linear quadrotor
+%% -------------------------
+function animate_linear_quad(T, X, desired, params)
+    figure('Name','Linear Quadrotor Animation','units','normalized','outerposition',[0 0 1 1]);
+    % Interpolate to fixed frame rate (~60 fps)
+    t_interp = linspace(T(1), T(end), max(ceil((T(end)-T(1))*60), length(T)));
+    states = interp1(T, X, t_interp);
+
+    l = params.l;
+    arm_points = [ l,  0,  0;
+                  -l,  0,  0;
+                   0,  l,  0;
+                   0, -l,  0];
+
+    min_x = min(states(:,1)) - 1; max_x = max(states(:,1)) + 1;
+    min_y = min(states(:,2)) - 1; max_y = max(states(:,2)) + 1;
+    min_z = 0; max_z = max(states(:,3)) + 1;
+
+    for k = 1:size(states,1)
+        cla; hold on; grid on;
+
+        pos = states(k,1:3)';
+        rpy = states(k,4:6)';
+        R = eul2rotm_ZYX(rpy); % ZYX rotation (same as in earlier script)
+
+        rotated = (R * arm_points')';
+        translated = rotated + pos';
+
+        % draw arms
+        plot3(translated([1,2],1), translated([1,2],2), translated([1,2],3), 'r-', 'LineWidth', 3);
+        plot3(translated([3,4],1), translated([3,4],2), translated([3,4],3), 'b-', 'LineWidth', 3);
+
+        % trajectory
+        plot3(states(1:k,1), states(1:k,2), states(1:k,3),'k:','LineWidth',1.2);
+
+        % target
+        plot3(desired.pos(1), desired.pos(2), desired.pos(3),'gx','MarkerSize',12,'LineWidth',2);
+
+        xlabel('X (m)'); ylabel('Y (m)'); zlabel('Z (m)');
+        title(sprintf('Linear PID Quadrotor Animation (t = %.2f s)', t_interp(k)));
+        axis([min_x max_x min_y max_y min_z max_z]);
+        view(35,25);
+        drawnow;
+    end
+end
+
+%% -------------------------
+% Convert Euler Z-Y-X (psi,theta,phi) to rotation matrix
+% (same as earlier function)
+%% -------------------------
+function R = eul2rotm_ZYX(rpy)
+    phi = rpy(1); theta = rpy(2); psi = rpy(3);
+    Rz = [cos(psi) -sin(psi) 0; sin(psi) cos(psi) 0; 0 0 1];
+    Ry = [cos(theta) 0 sin(theta); 0 1 0; -sin(theta) 0 cos(theta)];
+    Rx = [1 0 0; 0 cos(phi) -sin(phi); 0 sin(phi) cos(phi)];
+    R = Rz * Ry * Rx;
+end
