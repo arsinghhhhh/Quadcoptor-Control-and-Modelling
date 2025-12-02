@@ -1,0 +1,145 @@
+function compare_nonlinear_vs_linear_PD()
+    clc; clear; close all;
+    fprintf('Running comparison: Nonlinear PD vs Linearized PD model...\n');
+
+    %% 1️⃣ PARAMETERS & INITIAL CONDITIONS
+    params.g = 9.81; params.m = 0.5;
+    params.l = 0.25; params.Ixx = 2e-3; params.Iyy = 2e-3; params.Izz = 4e-3;
+    params.I = diag([params.Ixx, params.Iyy, params.Izz]);
+
+    tspan = [0 10];
+    initial_state = zeros(12,1);
+    initial_state(4) = 0.2;   % initial roll
+    initial_state(5) = -0.1;  % initial pitch
+
+    desired_state.pos = [0;0;5];
+    desired_state.vel = [0;0;0];
+    desired_state.acc = [0;0;0];
+    desired_state.rpy = [0;0;0];
+    desired_state.omega = [0;0;0];
+
+    %% 2️⃣ SIMULATE NONLINEAR MODEL (your full code)
+    [t_nonlin, x_nonlin] = ode45(@(t,x) nonlinear_dynamics(t,x,desired_state,params), tspan, initial_state);
+
+    %% 3️⃣ SIMULATE LINEARIZED MODEL (small-angle approximation)
+    [t_lin, x_lin] = ode45(@(t,x) linearized_dynamics(t,x,desired_state,params), tspan, initial_state);
+
+    %% 4️⃣ PLOT RESULTS — compare both
+    figure('Name','Comparison: Nonlinear vs Linearized Model','units','normalized','outerposition',[0 0 1 1]);
+
+    % 3D trajectory
+    subplot(2,2,1);
+    plot3(x_nonlin(:,1), x_nonlin(:,2), x_nonlin(:,3), 'b', 'LineWidth',2); hold on;
+    plot3(x_lin(:,1), x_lin(:,2), x_lin(:,3), 'r--', 'LineWidth',2);
+    plot3(0,0,5,'kx','MarkerSize',12,'LineWidth',2);
+    grid on; xlabel('X'); ylabel('Y'); zlabel('Z');
+    title('3D Trajectory'); legend('Nonlinear PD','Linearized PD','Target');
+    axis equal;
+
+    % Position vs Time
+    subplot(2,2,2);
+    plot(t_nonlin, x_nonlin(:,3),'b','LineWidth',2); hold on;
+    plot(t_lin, x_lin(:,3),'r--','LineWidth',2);
+    grid on; xlabel('Time (s)'); ylabel('Z (m)');
+    title('Altitude Response'); legend('Nonlinear','Linearized');
+
+    % Euler angles
+    subplot(2,2,3);
+    plot(t_nonlin, rad2deg(x_nonlin(:,4)),'b','LineWidth',2); hold on;
+    plot(t_lin, rad2deg(x_lin(:,4)),'r--','LineWidth',2);
+    plot(t_nonlin, rad2deg(x_nonlin(:,5)),'b:','LineWidth',2);
+    plot(t_lin, rad2deg(x_lin(:,5)),'r-.','LineWidth',2);
+    grid on; xlabel('Time (s)'); ylabel('Angle (deg)');
+    title('Attitude (Roll & Pitch)');
+    legend('Nonlinear \phi','Linear \phi','Nonlinear \theta','Linear \theta');
+
+    % Velocity
+    subplot(2,2,4);
+    plot(t_nonlin, x_nonlin(:,9),'b','LineWidth',2); hold on;
+    plot(t_lin, x_lin(:,9),'r--','LineWidth',2);
+    grid on; xlabel('Time (s)'); ylabel('dz/dt (m/s)');
+    title('Vertical Velocity'); legend('Nonlinear','Linearized');
+
+    fprintf('Comparison complete! Blue = Nonlinear, Red = Linearized\n');
+end
+
+%% ============================================================
+%  NONLINEAR DYNAMICS (same as your original code)
+% ==============================================================
+function xdot = nonlinear_dynamics(t,x,desired_state,params)
+    [F,M] = controller_PD(t,x,desired_state,params);
+
+    pos = x(1:3); rpy = x(4:6); vel = x(7:9); omega = x(10:12);
+    R = rotation_matrix(rpy);
+    acc = [0;0;-params.g] + (1/params.m)*R*[0;0;F];
+    omega_dot = inv(params.I)*(M - cross(omega, params.I*omega));
+    W = euler_to_body(rpy);
+    rpy_dot = W*omega;
+    xdot = [vel; rpy_dot; acc; omega_dot];
+end
+
+%% ============================================================
+%  LINEARIZED DYNAMICS (small-angle simplification)
+% ==============================================================
+function xdot = linearized_dynamics(t,x,desired_state,params)
+    [F,M] = controller_PD(t,x,desired_state,params);
+
+    % Unpack
+    pos = x(1:3); rpy = x(4:6); vel = x(7:9); omega = x(10:12);
+    phi = rpy(1); theta = rpy(2);
+
+    % Linearized translational dynamics
+    acc_x = params.g * theta;
+    acc_y = -params.g * phi;
+    acc_z = (F/params.m) - params.g;
+
+    % Rotational dynamics (small angles)
+    omega_dot = inv(params.I)*(M);
+
+    % Euler kinematics (approx)
+    rpy_dot = omega;
+
+    xdot = [vel; rpy_dot; [acc_x; acc_y; acc_z]; omega_dot];
+end
+
+%% ============================================================
+%  SIMPLE PD CONTROLLER (same gains for both)
+% ==============================================================
+function [F,M] = controller_PD(t,state,desired_state,params)
+    Kp_pos = [10;10;20];  Kd_pos = [8;8;12];
+    Kp_att = [150;150;70]; Kd_att = [20;20;15];
+
+    pos = state(1:3); rpy = state(4:6);
+    vel = state(7:9); omega = state(10:12);
+
+    pos_err = desired_state.pos - pos;
+    vel_err = desired_state.vel - vel;
+    desired_acc = desired_state.acc + Kp_pos.*pos_err + Kd_pos.*vel_err;
+
+    F = params.m*(params.g + desired_acc(3));
+    desired_rpy = zeros(3,1);
+    desired_rpy(1) = (1/params.g)*(desired_acc(1)*sin(desired_state.rpy(3)) - desired_acc(2)*cos(desired_state.rpy(3)));
+    desired_rpy(2) = (1/params.g)*(desired_acc(1)*cos(desired_state.rpy(3)) + desired_acc(2)*sin(desired_state.rpy(3)));
+    desired_rpy(3) = desired_state.rpy(3);
+
+    rpy_err = desired_rpy - rpy;
+    omega_err = desired_state.omega - omega;
+    M = Kp_att.*rpy_err + Kd_att.*omega_err;
+end
+
+%% ============================================================
+%  SUPPORT FUNCTIONS
+% ==============================================================
+function R = rotation_matrix(rpy)
+    phi=rpy(1); theta=rpy(2); psi=rpy(3);
+    R = [cos(psi)*cos(theta), cos(psi)*sin(theta)*sin(phi)-sin(psi)*cos(phi), cos(psi)*sin(theta)*cos(phi)+sin(psi)*sin(phi);
+         sin(psi)*cos(theta), sin(psi)*sin(theta)*sin(phi)+cos(psi)*cos(phi), sin(psi)*sin(theta)*cos(phi)-cos(psi)*sin(phi);
+         -sin(theta), cos(theta)*sin(phi), cos(theta)*cos(phi)];
+end
+
+function W = euler_to_body(rpy)
+    phi=rpy(1); theta=rpy(2);
+    W = [1 sin(phi)*tan(theta) cos(phi)*tan(theta);
+         0 cos(phi) -sin(phi);
+         0 sin(phi)/cos(theta) cos(phi)/cos(theta)];
+end
