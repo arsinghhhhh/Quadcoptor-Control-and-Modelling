@@ -1,0 +1,247 @@
+% =========================================================================
+% SINGLE M-FILE FOR QUADROTOR SIMULATION & ANIMATION
+% =========================================================================
+% This script simulates a quadrotor stabilizing to a hover position and
+% then visualizes the results with plots and a 3D animation.
+% =========================================================================
+
+function quadrotor_simulation_single_file()
+
+    %% 1. DEFINE PARAMETERS & INITIAL CONDITIONS
+    % ---------------------------------------------------------------------
+    clc; clear; close all;
+    fprintf('Running Quadrotor Simulation...\n');
+
+    % -- Physical Parameters
+    params.g = 9.81;      % Acceleration due to gravity (m/s^2)
+    params.m = 0.5;       % Mass of the quadrotor (kg)
+    params.l = 0.25;      % Arm length from center to motor (m)
+    params.Ixx = 2e-3;    % Moment of inertia about the x-axis (kg*m^2)
+    params.Iyy = 2e-3;    % Moment of inertia about the y-axis (kg*m^2)
+    params.Izz = 4e-3;    % Moment of inertia about the z-axis (kg*m^2)
+    params.I = diag([params.Ixx, params.Iyy, params.Izz]); % Inertia matrix
+
+    % -- Simulation Time
+    t_start = 0;
+    t_end = 15;
+    t_span = [t_start, t_end];
+
+    % -- Initial State Vector: [x, y, z, phi, theta, psi, dx, dy, dz, p, q, r]'
+    %   Positions (x,y,z), Euler Angles (phi,theta,psi), Velocities (dx,dy,dz), Angular Rates (p,q,r)
+    initial_state = zeros(12, 1);
+    initial_state(4) = 0.2;  % Start with a small roll to test stability
+    initial_state(5) = -0.1; % Start with a small pitch
+
+    % -- Desired State (Setpoint)
+    %   Hover at [x,y,z] = [0, 0, 5] meters
+    desired_state.pos = [0; 0; 5];
+    desired_state.vel = [0; 0; 0];
+    desired_state.acc = [0; 0; 0];
+    desired_state.rpy = [0; 0; 0];
+    desired_state.omega = [0; 0; 0];
+
+    %% 2. RUN THE SIMULATION
+    % ---------------------------------------------------------------------
+    % Use ode45 to solve the differential equations of motion.
+    % The solver calls the 'quadrotor_dynamics' nested function at each time step.
+    [time, state_history] = ode45(@(t, state) quadrotor_dynamics(t, state, desired_state, params), t_span, initial_state);
+    
+    fprintf('Simulation Complete!\n');
+
+    %% 3. PLOT THE RESULTS
+    % ---------------------------------------------------------------------
+    fprintf('Plotting results...\n');
+    
+    % Extract states for plotting
+    x = state_history(:, 1); y = state_history(:, 2); z = state_history(:, 3);
+    phi = state_history(:, 4); theta = state_history(:, 5); psi = state_history(:, 6);
+
+    figure('Name', 'Quadrotor Simulation Results', 'units','normalized','outerposition',[0 0 1 1]);
+
+    % 3D Trajectory
+    subplot(2, 2, 1);
+    plot3(x, y, z, 'b-', 'LineWidth', 2);
+    hold on;
+    plot3(x(1), y(1), z(1), 'go', 'MarkerSize', 10, 'MarkerFaceColor', 'g'); % Start
+    plot3(desired_state.pos(1), desired_state.pos(2), desired_state.pos(3), 'rx', 'MarkerSize', 15, 'LineWidth', 3); % Target
+    grid on;
+    title('3D Trajectory'); xlabel('X (m)'); ylabel('Y (m)'); zlabel('Z (m)');
+    legend('Path', 'Start', 'Target');
+    axis equal;
+
+    % Position Components
+    subplot(2, 2, 2);
+    plot(time, x, 'r-', time, y, 'g-', time, z, 'b-');
+    grid on;
+    title('Position vs. Time'); xlabel('Time (s)'); ylabel('Position (m)');
+    legend('X', 'Y', 'Z');
+
+    % Euler Angles
+    subplot(2, 2, 3);
+    plot(time, rad2deg(phi), 'r-', time, rad2deg(theta), 'g-', time, rad2deg(psi), 'b-');
+    grid on;
+    title('Euler Angles vs. Time'); xlabel('Time (s)'); ylabel('Angle (degrees)');
+    legend('\phi (Roll)', '\theta (Pitch)', '\psi (Yaw)');
+
+    % Linear Velocities
+    subplot(2, 2, 4);
+    plot(time, state_history(:, 7), 'r-', time, state_history(:, 8), 'g-', time, state_history(:, 9), 'b-');
+    grid on;
+    title('Velocity vs. Time'); xlabel('Time (s)'); ylabel('Velocity (m/s)');
+    legend('V_x', 'V_y', 'V_z');
+
+    %% 4. ANIMATE THE QUADROTOR
+    % ---------------------------------------------------------------------
+    animate_quadrotor(time, state_history, desired_state, params);
+    fprintf('Animation complete.\n');
+
+end
+
+% =========================================================================
+% NESTED FUNCTIONS (Controller and Dynamics)
+% These functions are defined inside the main function so they can access
+% its variables and parameters.
+% =========================================================================
+
+%% DYNAMICS FUNCTION (Equations of Motion)
+function state_dot = quadrotor_dynamics(t, state, desired_state, params)
+    
+    % Get control inputs (total thrust F and torques M) from the controller
+    [F, M] = controller(t, state, desired_state, params);
+
+    % -- Unpack state variables
+    pos = state(1:3);      % [x; y; z]
+    rpy = state(4:6);      % [phi; theta; psi]
+    vel = state(7:9);      % [dx; dy; dz]
+    omega = state(10:12);  % [p; q; r]
+
+    % -- Rotational matrix from Body frame to Inertial frame
+    R = [cos(rpy(3))*cos(rpy(2)), cos(rpy(3))*sin(rpy(2))*sin(rpy(1))-sin(rpy(3))*cos(rpy(1)), cos(rpy(3))*sin(rpy(2))*cos(rpy(1))+sin(rpy(3))*sin(rpy(1));
+         sin(rpy(3))*cos(rpy(2)), sin(rpy(3))*sin(rpy(2))*sin(rpy(1))+cos(rpy(3))*cos(rpy(1)), sin(rpy(3))*sin(rpy(2))*cos(rpy(1))-cos(rpy(3))*sin(rpy(1));
+         -sin(rpy(2)),            cos(rpy(2))*sin(rpy(1)),                            cos(rpy(2))*cos(rpy(1))];
+
+    % -- Translational Dynamics (Newton's Second Law)
+    acceleration = [0; 0; -params.g] + (1/params.m) * R * [0; 0; F];
+
+    % -- Rotational Dynamics (Euler's Equations)
+    omega_dot = inv(params.I) * (M - cross(omega, params.I * omega));
+    
+    % -- Kinematic relationship between angular velocities and Euler angle rates
+    W = [1, sin(rpy(1))*tan(rpy(2)), cos(rpy(1))*tan(rpy(2));
+         0, cos(rpy(1)),            -sin(rpy(1));
+         0, sin(rpy(1))/cos(rpy(2)), cos(rpy(1))/cos(rpy(2))];
+    rpy_dot = W * omega;
+
+    % -- Assemble the state derivative vector
+    state_dot = [vel; rpy_dot; acceleration; omega_dot];
+end
+
+%% CONTROLLER FUNCTION (PID)
+function [F, M] = controller(t, state, desired_state, params)
+
+    % -- PID Gains
+    Kp_pos = [10; 10; 20];   % Proportional gains for position [x, y, z]
+    Kd_pos = [8; 8; 12];   % Derivative gains for position [x, y, z]
+
+    Kp_att = [150; 150; 70]; % Proportional gains for attitude [phi, theta, psi]
+    Kd_att = [20; 20; 15];  % Derivative gains for attitude [p, q, r]
+
+    % -- Unpack current state
+    pos = state(1:3);
+    rpy = state(4:6);
+    vel = state(7:9);
+    omega = state(10:12);
+    
+    % -- Position Controller (PD Control)
+    % This outer loop calculates the desired attitude to achieve the desired position.
+    pos_error = desired_state.pos - pos;
+    vel_error = desired_state.vel - vel;
+    
+    % Desired acceleration command
+    desired_acc = desired_state.acc + Kp_pos .* pos_error + Kd_pos .* vel_error;
+    
+    % Calculate total thrust F required to achieve desired vertical acceleration
+    F = params.m * (params.g + desired_acc(3));
+    F = max(0, F); % Ensure thrust is non-negative
+    
+    % Calculate desired roll and pitch from desired acceleration
+    desired_rpy = zeros(3,1);
+    desired_rpy(1) = (1/params.g) * (desired_acc(1)*sin(desired_state.rpy(3)) - desired_acc(2)*cos(desired_state.rpy(3)));
+    desired_rpy(2) = (1/params.g) * (desired_acc(1)*cos(desired_state.rpy(3)) + desired_acc(2)*sin(desired_state.rpy(3)));
+    desired_rpy(3) = desired_state.rpy(3); % Desired yaw is fixed
+
+    % -- Attitude Controller (PD Control)
+    % This inner loop calculates the torques required to achieve the desired attitude.
+    rpy_error = desired_rpy - rpy;
+    omega_error = desired_state.omega - omega;
+    
+    % Torque command (vector M)
+    M = Kp_att .* rpy_error + Kd_att .* omega_error;
+end
+
+%% ANIMATION FUNCTION
+function animate_quadrotor(time, states, desired_state, params)
+    
+    % Create a new figure for the animation
+    figure('Name', 'Quadrotor Animation', 'units','normalized','outerposition',[0 0 1 1]);
+    
+    % Interpolate states for a smoother animation (e.g., at 60 fps)
+    t_interp = time(1):1/60:time(end);
+    states_interp = interp1(time, states, t_interp);
+
+    % Quadrotor body definition
+    l = params.l;
+    arm_points = [ l,  0,  0;
+                  -l,  0,  0;
+                   0,  l,  0;
+                   0, -l,  0;
+                   l,  0,  0;
+                   0,  l,  0;
+                  -l,  0,  0;
+                   0, -l,  0;];
+    
+    % Find axis limits for the plot
+    min_x = min([min(states(:,1)), desired_state.pos(1)]) - 1;
+    max_x = max([max(states(:,1)), desired_state.pos(1)]) + 1;
+    min_y = min([min(states(:,2)), desired_state.pos(2)]) - 1;
+    max_y = max([max(states(:,2)), desired_state.pos(2)]) + 1;
+    min_z = 0;
+    max_z = max([max(states(:,3)), desired_state.pos(3)]) + 1;
+    
+    % Main animation loop
+    for i = 1:length(t_interp)
+        % Clear the current axes
+        cla;
+        hold on; grid on;
+
+        % Unpack state for the current time step
+        pos = states_interp(i, 1:3)';
+        rpy = states_interp(i, 4:6)';
+        
+        % Calculate rotation matrix
+        R = [cos(rpy(3))*cos(rpy(2)), cos(rpy(3))*sin(rpy(2))*sin(rpy(1))-sin(rpy(3))*cos(rpy(1)), cos(rpy(3))*sin(rpy(2))*cos(rpy(1))+sin(rpy(3))*sin(rpy(1));
+             sin(rpy(3))*cos(rpy(2)), sin(rpy(3))*sin(rpy(2))*sin(rpy(1))+cos(rpy(3))*cos(rpy(1)), sin(rpy(3))*sin(rpy(2))*cos(rpy(1))-cos(rpy(3))*sin(rpy(1));
+             -sin(rpy(2)),            cos(rpy(2))*sin(rpy(1)),                            cos(rpy(2))*cos(rpy(1))];
+        
+        % Rotate and translate quadrotor arms
+        rotated_arms = (R * arm_points')';
+        translated_arms = rotated_arms + pos';
+
+        % Plot quadrotor arms
+        plot3(translated_arms([1,2],1), translated_arms([1,2],2), translated_arms([1,2],3), 'r-', 'LineWidth', 3);
+        plot3(translated_arms([3,4],1), translated_arms([3,4],2), translated_arms([3,4],3), 'b-', 'LineWidth', 3);
+        
+        % Plot full trajectory path
+        plot3(states_interp(1:i,1), states_interp(1:i,2), states_interp(1:i,3), 'k:');
+
+        % Plot target location
+        plot3(desired_state.pos(1), desired_state.pos(2), desired_state.pos(3), 'rx', 'MarkerSize', 15, 'LineWidth', 3);
+        
+        % Set plot view and labels
+        title(sprintf('Quadrotor Animation (Time: %.2f s)', t_interp(i)));
+        xlabel('X (m)'); ylabel('Y (m)'); zlabel('Z (m)');
+        axis([min_x max_x min_y max_y min_z max_z]);
+        view(30, 20); % 3D view angle
+        drawnow;
+    end
+end
