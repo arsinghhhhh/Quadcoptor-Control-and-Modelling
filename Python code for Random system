@@ -2,79 +2,83 @@ import numpy as np
 import cvxpy as cp
 
 # =========================
-# Parameters
+# System size
 # =========================
-g = 9.81
-m = 1.0
-Ixx = 0.01
-Iyy = 0.01
-Izz = 0.02
+n = 12   # number of states
+m = 4    # number of inputs
 
 # =========================
-# A Matrix (12x12)
+# Generate random system
 # =========================
-A = np.zeros((12,12))
+np.random.seed(42)
 
-# Position → velocity
-A[0,3] = 1
-A[1,4] = 1
-A[2,5] = 1
+# Stable-ish A (shift eigenvalues left)
+A = np.random.randn(n, n) - 2*np.eye(n)
 
-# Gravity coupling
-A[3,7] = g
-A[4,6] = -g
-
-# Angular kinematics
-A[6,9] = 1
-A[7,10] = 1
-A[8,11] = 1
+# Random input matrix
+B = np.random.randn(n, m)
 
 # =========================
-# B Matrix (12x4)
+# Controllability check
 # =========================
-B = np.zeros((12,4))
+def controllability_matrix(A, B):
+    n = A.shape[0]
+    C = B
+    for i in range(1, n):
+        C = np.hstack((C, np.linalg.matrix_power(A, i) @ B))
+    return C
 
-B[5,0] = 1/m
-B[9,1] = 1/Ixx
-B[10,2] = 1/Iyy
-B[11,3] = 1/Izz
+C = controllability_matrix(A, B)
+rank_C = np.linalg.matrix_rank(C)
+
+print(f"\n📊 Controllability Rank = {rank_C}")
+
+if rank_C == n:
+    print("✅ System is controllable")
+else:
+    print("⚠️ System NOT fully controllable (may still be stabilizable)")
 
 # =========================
-# LMI: Find P, Y
+# LMI: Solve for P, Y
 # =========================
-P = cp.Variable((12,12), symmetric=True)
-Y = cp.Variable((4,12))
+P = cp.Variable((n, n), symmetric=True)
+Y = cp.Variable((m, n))
 
-eps = 1e-6
+eps = 1e-4
 
 constraints = [
-    P >> eps*np.eye(12),
-    A.T @ P + P @ A + B @ Y + Y.T @ B.T << -eps*np.eye(12)
+    P >> eps * np.eye(n),
+    A.T @ P + P @ A + B @ Y + Y.T @ B.T << -eps * np.eye(n)
 ]
 
 prob = cp.Problem(cp.Minimize(0), constraints)
 prob.solve(solver=cp.SCS)
 
 # =========================
-# Check solution
+# Check feasibility
 # =========================
 if P.value is None:
-    print("❌ LMI not feasible. Try changing parameters or solver.")
+    print("\n❌ LMI not feasible. Try changing solver or parameters.")
     exit()
 
 # =========================
 # Compute K
 # =========================
-P_val = P.value
-Y_val = Y.value
-
-K = Y_val @ np.linalg.inv(P_val)
+K = Y.value @ np.linalg.inv(P.value)
 
 print("\n✅ Stabilizing Gain Matrix K:\n")
 print(K)
 
 # =========================
-# Stability Check
+# K matrix dimensions
+# =========================
+rows, cols = K.shape
+print("\n📐 K Matrix Dimensions:")
+print(f"Rows (inputs)    = {rows}")
+print(f"Columns (states) = {cols}")
+
+# =========================
+# Stability check
 # =========================
 Acl = A + B @ K
 eigvals = np.linalg.eigvals(Acl)
@@ -83,18 +87,44 @@ print("\n📊 Closed-loop Eigenvalues:\n")
 print(eigvals)
 
 # =========================
-# Stability Verdict
+# Stability verdict
 # =========================
 if np.all(np.real(eigvals) < 0):
     print("\n✅ System is STABLE")
 else:
     print("\n⚠️ System is NOT stable")
 
-# =========================
-# K Matrix Size
-# =========================
-rows, cols = K.shape
 
-print("\n📐 K Matrix Dimensions:")
-print(f"Rows (inputs)    = {rows}")
-print(f"Columns (states) = {cols}")
+# =========================
+# Simulate system (Euler method)
+# =========================
+dt = 0.01      # time step
+T = 5          # total time (seconds)
+steps = int(T/dt)
+
+# Initial condition (random)
+x = np.random.randn(n)
+
+trajectory = []
+
+for _ in range(steps):
+    trajectory.append(x.copy())
+    x = x + dt * (Acl @ x)
+
+trajectory = np.array(trajectory)
+
+# =========================
+# Plot trajectories
+# =========================
+import matplotlib.pyplot as plt
+
+plt.figure()
+
+for i in range(n):
+    plt.plot(trajectory[:, i])
+
+plt.xlabel("Time Steps")
+plt.ylabel("States")
+plt.title("Closed-loop State Trajectories")
+
+plt.show()
