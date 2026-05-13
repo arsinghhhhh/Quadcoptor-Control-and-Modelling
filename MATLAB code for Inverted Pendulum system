@@ -1,0 +1,125 @@
+clc; clear; close all;
+
+%% Continuous system
+A = [0 1 0 0;
+     0 0 1 0;
+     0 0 0 1;
+    -1 -3 -3 -1];
+
+B = [0;0;0;1];
+
+n = size(A,1);
+m = size(B,2);
+
+%% =========================
+% Continuous LMI
+%% =========================
+cvx_begin sdp
+    variable P(n,n) symmetric
+    variable Q(m,n)
+
+    eps = 1e-4;
+
+    P >= eps*eye(n);
+    A'*P + P*A + B*Q + Q'*B' <= -eps*eye(n);
+cvx_end
+
+disp('Continuous K:')
+K = Q / P
+eig(A + B*K)
+
+%% =========================
+% Discretization
+%% =========================
+Ts = 0.05;
+%% =========================
+% Manual Discretization
+%% =========================
+Ts = 0.05;
+
+Ad = expm(A * Ts);
+Bd = A \ (Ad - eye(n)) * B;
+
+disp('Discrete A:')
+disp(Ad)
+
+disp('Discrete B:')
+disp(Bd)
+
+%% =========================
+% Discrete LMI
+%% =========================
+cvx_begin sdp
+    variable P(n,n) symmetric
+    variable Q(m,n)
+
+    P >= eps*eye(n);
+
+    M = [P, Ad*P + Bd*Q;
+         (Ad*P + Bd*Q)', P];
+
+    M >= eps*eye(2*n);
+cvx_end
+
+% Continuous
+K_cont = Q / P;
+
+% Discrete
+K_disc = Q / P;
+
+disp('Discrete K:')
+K = Q / P
+eig(Ad + Bd*K)
+
+%% =========================
+% Continuous vs Discrete Simulation
+%% =========================
+
+dt = 0.001;       % small step for continuous approx
+T = 5;
+steps = T/dt;
+
+x0 = [1; 0; 0; 0];   % initial condition
+
+%% -------- Continuous (Euler) --------
+x = x0;
+traj_cont = zeros(4, steps);
+
+Acl = A + B*K;  % use continuous K
+
+for k = 1:steps
+    traj_cont(:,k) = x;
+    x = x + dt*(Acl*x);
+end
+
+%% -------- Discrete --------
+Ts = 0.05;
+steps_d = T/Ts;
+
+x = x0;
+traj_disc = zeros(4, steps_d);
+
+for k = 1:steps_d
+    traj_disc(:,k) = x;
+    x = (Ad + Bd*K_disc)*x;
+end
+
+%% =========================
+% Plot comparison
+%% =========================
+t_cont = 0:dt:T-dt;
+t_disc = 0:Ts:T-Ts;
+
+figure;
+
+for i = 1:4
+    subplot(2,2,i)
+    plot(t_cont, traj_cont(i,:), 'b', 'LineWidth',1.5); hold on;
+    stem(t_disc, traj_disc(i,:), 'r');
+    
+    title(['State x', num2str(i)])
+    legend('Continuous','Discrete')
+    grid on;
+end
+
+sgtitle('Continuous vs Discrete State Response');
