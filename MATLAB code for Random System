@@ -1,0 +1,160 @@
+clc;
+clear;
+close all;
+
+%% =========================
+% System size
+%% =========================
+n = 12;   % states
+m = 4;    % inputs
+
+%% =========================
+% Generate random system
+%% =========================
+rng(42);
+
+A = randn(n,n) - 2*eye(n);
+
+B = randn(n,m);
+
+%% =========================
+% Controllability Check
+%% =========================
+%% =========================
+% Controllability Check
+%% =========================
+C = B;
+
+for i = 1:n-1
+    C = [C A^i * B];
+end
+
+rank_C = rank(C);
+
+fprintf('\n📊 Controllability Rank = %d\n', rank_C);
+
+if rank_C == n
+    disp('✅ System is controllable');
+else
+    disp('⚠️ System NOT fully controllable');
+end
+fprintf('\n📊 Controllability Rank = %d\n', rank_C);
+
+if rank_C == n
+    disp('✅ System is controllable');
+else
+    disp('⚠️ System NOT fully controllable');
+end
+
+%% =========================
+% LMI Stabilization
+%% =========================
+cvx_begin sdp
+
+    variable P(n,n) symmetric
+    variable Y(m,n)
+
+    eps = 1e-4;
+
+    minimize(0)
+
+    subject to
+
+        P >= eps*eye(n);
+
+        A'*P + P*A + B*Y + Y'*B' <= -eps*eye(n);
+
+cvx_end
+
+%% =========================
+% Feasibility Check
+%% =========================
+if ~strcmp(cvx_status,'Solved')
+
+    disp('❌ LMI not feasible');
+    return;
+
+end
+
+%% =========================
+% Compute K
+%% =========================
+K = Y / P;
+
+disp(' ');
+disp('✅ Stabilizing Gain Matrix K:');
+disp(K);
+
+%% =========================
+% K Matrix Size
+%% =========================
+[rows, cols] = size(K);
+
+fprintf('\n📐 K Matrix Dimensions:\n');
+fprintf('Rows (inputs)    = %d\n', rows);
+fprintf('Columns (states) = %d\n', cols);
+
+%% =========================
+% Closed-loop stability
+%% =========================
+Acl = A + B*K;
+
+eigvals = eig(Acl);
+
+disp(' ');
+disp('📊 Closed-loop Eigenvalues:');
+disp(eigvals);
+
+%% =========================
+% Stability Check
+%% =========================
+if all(real(eigvals) < 0)
+
+    disp(' ');
+    disp('✅ System is STABLE');
+
+else
+
+    disp(' ');
+    disp('⚠️ System is NOT stable');
+
+end
+
+%% =========================
+% Simulation
+%% =========================
+dt = 0.01;
+T = 5;
+
+steps = T/dt;
+
+x = randn(n,1);
+
+trajectory = zeros(n,steps);
+
+for k = 1:steps
+
+    trajectory(:,k) = x;
+
+    x = x + dt*(Acl*x);
+
+end
+
+%% =========================
+% Plot trajectories
+%% =========================
+figure;
+
+for i = 1:n
+
+    plot(trajectory(i,:),'LineWidth',1.2);
+    hold on;
+
+end
+
+xlabel('Time Steps');
+ylabel('States');
+
+title('Closed-loop State Trajectories');
+
+grid on;
