@@ -1,0 +1,122 @@
+import numpy as np
+import cvxpy as cp
+from scipy.linalg import eigvals
+from scipy.signal import cont2discrete
+
+# --------------------------------
+# Real system: inverted pendulum
+# --------------------------------
+A = np.array([
+[0,1,0,0],
+[0,0,1,0],
+[0,0,0,1],
+[-1,-3,-3,-1]
+])
+
+B = np.array([
+[0],
+[0],
+[0],
+[1]
+])
+
+print("Continuous A:\n",A)
+print("\nContinuous B:\n",B)
+
+n = A.shape[0]
+m = B.shape[1]
+
+# LMI variables
+P = cp.Variable((n,n), symmetric=True)
+Q = cp.Variable((m,n))
+
+# Continuous Lyapunov LMI
+LMI = A.T @ P + P @ A + B @ Q + Q.T @ B.T
+
+constraints = [
+P >> 1e-4*np.eye(n),
+LMI << -1e-4*np.eye(n)
+]
+
+prob = cp.Problem(cp.Minimize(cp.trace(P)), constraints)
+prob.solve()
+
+print("\nSolver status:", prob.status)
+
+if prob.status == "optimal":
+
+    P_val = P.value
+    Q_val = Q.value
+
+    print("\nP matrix:\n", P_val)
+    print("\nQ matrix:\n", Q_val)
+
+    K = Q_val @ np.linalg.inv(P_val)
+
+    print("\nStabilizing K:\n", K)
+
+    Acl = A + B @ K
+
+    eig_cl = eigvals(Acl)
+
+    print("\nClosed-loop eigenvalues:\n", eig_cl)
+
+    if np.all(np.real(eig_cl) < 0):
+        print("\nContinuous system STABLE")
+
+else:
+    print("LMI infeasible")
+
+# --------------------------------
+# Discretize system
+# --------------------------------
+Ts = 0.05
+
+Ad, Bd, _, _, _ = cont2discrete((A, B, np.eye(4), 0), Ts)
+
+print("\nDiscrete A:\n", Ad)
+print("\nDiscrete B:\n", Bd)
+
+# LMI variables
+P = cp.Variable((n,n), symmetric=True)
+Q = cp.Variable((m,n))
+
+# Discrete Lyapunov LMI
+M = cp.bmat([
+[P, Ad @ P + Bd @ Q],
+[(Ad @ P + Bd @ Q).T, P]
+])
+
+constraints = [
+P >> 1e-4*np.eye(n),
+M >> 1e-4*np.eye(2*n)
+]
+
+prob = cp.Problem(cp.Minimize(cp.trace(P)), constraints)
+prob.solve()
+
+print("\nSolver status:", prob.status)
+
+if prob.status == "optimal":
+
+    P_val = P.value
+    Q_val = Q.value
+
+    print("\nP matrix:\n", P_val)
+    print("\nQ matrix:\n", Q_val)
+
+    K = Q_val @ np.linalg.inv(P_val)
+
+    print("\nStabilizing K:\n", K)
+
+    Acl = Ad + Bd @ K
+
+    eig_cl = eigvals(Acl)
+
+    print("\nClosed-loop eigenvalues:\n", eig_cl)
+
+    if np.all(np.abs(eig_cl) < 1):
+        print("\nDiscrete system STABLE")
+
+else:
+    print("LMI infeasible")
