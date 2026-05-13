@@ -1,0 +1,100 @@
+import numpy as np
+import cvxpy as cp
+
+# =========================
+# Parameters
+# =========================
+g = 9.81
+m = 1.0
+Ixx = 0.01
+Iyy = 0.01
+Izz = 0.02
+
+# =========================
+# A Matrix (12x12)
+# =========================
+A = np.zeros((12,12))
+
+# Position → velocity
+A[0,3] = 1
+A[1,4] = 1
+A[2,5] = 1
+
+# Gravity coupling
+A[3,7] = g
+A[4,6] = -g
+
+# Angular kinematics
+A[6,9] = 1
+A[7,10] = 1
+A[8,11] = 1
+
+# =========================
+# B Matrix (12x4)
+# =========================
+B = np.zeros((12,4))
+
+B[5,0] = 1/m
+B[9,1] = 1/Ixx
+B[10,2] = 1/Iyy
+B[11,3] = 1/Izz
+
+# =========================
+# LMI: Find P, Y
+# =========================
+P = cp.Variable((12,12), symmetric=True)
+Y = cp.Variable((4,12))
+
+eps = 1e-6
+
+constraints = [
+    P >> eps*np.eye(12),
+    A.T @ P + P @ A + B @ Y + Y.T @ B.T << -eps*np.eye(12)
+]
+
+prob = cp.Problem(cp.Minimize(0), constraints)
+prob.solve(solver=cp.SCS)
+
+# =========================
+# Check solution
+# =========================
+if P.value is None:
+    print("❌ LMI not feasible. Try changing parameters or solver.")
+    exit()
+
+# =========================
+# Compute K
+# =========================
+P_val = P.value
+Y_val = Y.value
+
+K = Y_val @ np.linalg.inv(P_val)
+
+print("\n✅ Stabilizing Gain Matrix K:\n")
+print(K)
+
+# =========================
+# Stability Check
+# =========================
+Acl = A + B @ K
+eigvals = np.linalg.eigvals(Acl)
+
+print("\n📊 Closed-loop Eigenvalues:\n")
+print(eigvals)
+
+# =========================
+# Stability Verdict
+# =========================
+if np.all(np.real(eigvals) < 0):
+    print("\n✅ System is STABLE")
+else:
+    print("\n⚠️ System is NOT stable")
+
+# =========================
+# K Matrix Size
+# =========================
+rows, cols = K.shape
+
+print("\n📐 K Matrix Dimensions:")
+print(f"Rows (inputs)    = {rows}")
+print(f"Columns (states) = {cols}")
