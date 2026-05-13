@@ -1,0 +1,85 @@
+clc; clear; close all;
+
+%% =========================
+% Parameters
+%% =========================
+g = 9.81;
+m = 1.0;
+Ixx = 0.01;
+Iyy = 0.01;
+Izz = 0.02;
+
+%% =========================
+% A Matrix
+%% =========================
+A = zeros(12,12);
+
+A(1,4) = 1;
+A(2,5) = 1;
+A(3,6) = 1;
+
+A(4,8) = g;
+A(5,7) = -g;
+
+A(7,10) = 1;
+A(8,11) = 1;
+A(9,12) = 1;
+
+%% =========================
+% B Matrix
+%% =========================
+B = zeros(12,4);
+
+B(6,1)  = 1/m;
+B(10,2) = 1/Ixx;
+B(11,3) = 1/Iyy;
+B(12,4) = 1/Izz;
+
+%% =========================
+% LMI using CVX
+%% =========================
+cvx_begin sdp quiet
+    cvx_solver SDPT3   % closest stable solver
+
+    variable P(12,12) symmetric
+    variable Y(4,12)
+
+    eps = 1e-6;
+
+    P >= eps*eye(12);
+    A'*P + P*A + B*Y + Y'*B' <= -eps*eye(12);
+cvx_end
+
+%% =========================
+% Compute K
+%% =========================
+K = Y / P;
+
+disp(' ');
+disp('✅ Stabilizing Gain Matrix K:');
+disp(K);
+
+%% =========================
+% Stability Check
+%% =========================
+Acl = A + B*K;
+eigvals = eig(Acl);
+
+disp(' ');
+disp('📊 Closed-loop Eigenvalues:');
+disp(eigvals);
+
+if all(real(eigvals) < 0)
+    disp('✅ System is STABLE');
+else
+    disp('⚠️ System is NOT stable');
+end
+
+%% =========================
+% K Matrix Dimensions
+%% =========================
+[rows, cols] = size(K);
+
+fprintf('\n📐 K Matrix Dimensions:\n');
+fprintf('Rows (inputs)    = %d\n', rows);
+fprintf('Columns (states) = %d\n', cols);
